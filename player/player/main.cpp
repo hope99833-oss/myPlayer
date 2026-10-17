@@ -1,5 +1,7 @@
 #include "player.h"
 #include <QtWidgets/QApplication>
+#include "ffplayer.h"
+#include "ffmpeg_dll.h"
 
 int main(int argc, char *argv[])
 {

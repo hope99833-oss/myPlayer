@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{B2C3D4E5-F6A7-8901-BCDE-F12345678901}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>ffmpeg</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)bin\</OutDir>
+    <IntDir>$(Configuration)\ffmpeg\</IntDir>
+    <TargetName>ffmpeg</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)bin\</OutDir>
+    <IntDir>$(Configuration)\ffmpeg\</IntDir>
+    <TargetName>ffmpeg</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>FFMPEG_BUILD_DLL;_DEBUG;_CRT_SECURE_NO_WARNINGS;_WIN32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)fftools;D:\FFmpeg;D:\FFmpeg\libavcodec;D:\FFmpeg\libavformat;D:\FFmpeg\libavutil;D:\FFmpeg\libswresample;D:\FFmpeg\libswscale;D:\FFmpeg\libavfilter;D:\FFmpeg\libavdevice;$(ProjectDir)include\sdl2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>false</ConformanceMode>
+      <AdditionalOptions>/std:c11 /experimental:c11atomics %(AdditionalOptions)</AdditionalOptions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(ProjectDir)lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>avcodec.lib;avdevice.lib;avfilter.lib;avformat.lib;avutil.lib;swresample.lib;swscale.lib;psapi.lib;shell32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>false</SDLCheck>
+      <PreprocessorDefinitions>FFMPEG_BUILD_DLL;NDEBUG;_CRT_SECURE_NO_WARNINGS;_WIN32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)fftools;D:\FFmpeg;D:\FFmpeg\libavcodec;D:\FFmpeg\libavformat;D:\FFmpeg\libavutil;D:\FFmpeg\libswresample;D:\FFmpeg\libswscale;D:\FFmpeg\libavfilter;D:\FFmpeg\libavdevice;$(ProjectDir)include\sdl2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <ConformanceMode>false</ConformanceMode>
+      <AdditionalOptions>/std:c11 /experimental:c11atomics %(AdditionalOptions)</AdditionalOptions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalLibraryDirectories>$(ProjectDir)lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>avcodec.lib;avdevice.lib;avfilter.lib;avformat.lib;avutil.lib;swresample.lib;swscale.lib;psapi.lib;shell32.lib;advapi32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="fftools\ffmpeg.c" />
+    <ClCompile Include="fftools\ffmpeg_dec.c" />
+    <ClCompile Include="fftools\ffmpeg_demux.c" />
+    <ClCompile Include="fftools\ffmpeg_enc.c" />
+    <ClCompile Include="fftools\ffmpeg_filter.c" />
+    <ClCompile Include="fftools\ffmpeg_hw.c" />
+    <ClCompile Include="fftools\ffmpeg_mux.c" />
+    <ClCompile Include="fftools\ffmpeg_mux_init.c" />
+    <ClCompile Include="fftools\ffmpeg_opt.c" />
+    <ClCompile Include="fftools\ffmpeg_sched.c" />
+    <ClCompile Include="fftools\cmdutils.c" />
+    <ClCompile Include="fftools\opt_common.c" />
+    <ClCompile Include="fftools\sync_queue.c" />
+    <ClCompile Include="fftools\thread_queue.c" />
+    <ClCompile Include="fftools\graph\graphprint.c" />
+    <ClCompile Include="fftools\textformat\avtextformat.c" />
+    <ClCompile Include="fftools\textformat\tf_compact.c" />
+    <ClCompile Include="fftools\textformat\tf_default.c" />
+    <ClCompile Include="fftools\textformat\tf_flat.c" />
+    <ClCompile Include="fftools\textformat\tf_ini.c" />
+    <ClCompile Include="fftools\textformat\tf_json.c" />
+    <ClCompile Include="fftools\textformat\tf_mermaid.c" />
+    <ClCompile Include="fftools\textformat\tf_xml.c" />
+    <ClCompile Include="fftools\textformat\tw_avio.c" />
+    <ClCompile Include="fftools\textformat\tw_buffer.c" />
+    <ClCompile Include="fftools\textformat\tw_stdout.c" />
+    <ClCompile Include="fftools\resources\resman.c" />
+    <ClCompile Include="fftools\resources\graph_resources.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="fftools\config.h" />
+    <ClInclude Include="fftools\config_components.h" />
+    <ClInclude Include="fftools\ffmpeg.h" />
+    <ClInclude Include="fftools\ffmpeg_dll.h" />
+    <ClInclude Include="fftools\ffmpeg_mux.h" />
+    <ClInclude Include="fftools\ffmpeg_sched.h" />
+    <ClInclude Include="fftools\ffmpeg_utils.h" />
+    <ClInclude Include="fftools\cmdutils.h" />
+    <ClInclude Include="fftools\opt_common.h" />
+    <ClInclude Include="fftools\sync_queue.h" />
+    <ClInclude Include="fftools\thread_queue.h" />
+    <ClInclude Include="fftools\fopen_utf8.h" />
+    <ClInclude Include="fftools\graph\graphprint.h" />
+    <ClInclude Include="fftools\textformat\avtextformat.h" />
+    <ClInclude Include="fftools\textformat\avtextwriters.h" />
+    <ClInclude Include="fftools\textformat\tf_internal.h" />
+    <ClInclude Include="fftools\textformat\tf_mermaid.h" />
+    <ClInclude Include="fftools\resources\resman.h" />
+    <ClInclude Include="compat\w32dlfcn.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
