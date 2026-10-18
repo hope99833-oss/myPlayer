@@ -34,6 +34,8 @@
 #define HAVE_PTHREADS 0
 #define HAVE_OS2THREADS 0
 #define HAVE_THREADS 1
+#define HAVE_STDATOMIC 0
+#define HAVE_ATOMICS_WIN32 1
 
 /* --- Windows API --- */
 #define HAVE_GETPROCESSTIMES 1
@@ -155,14 +157,5 @@
 #define HAVE_FAST_FLOAT16 0
 
 #define HAVE_ATOMIC_WIN32_INTERLOCKED 1
-
-/* --- timespec for w32pthreads --- */
-#if defined(_MSC_VER) && !defined(_TIMESPEC_DEFINED)
-struct timespec {
-    long long tv_sec;
-    long tv_nsec;
-};
-#define _TIMESPEC_DEFINED
-#endif
 
 #endif /* FFMPEG_CONFIG_H */

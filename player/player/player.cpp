@@ -1,8 +1,22 @@
 #include "player.h"
+#include "ffplayer.h"
 #include <QStyle>
 #include <QLinearGradient>
 #include <QGraphicsDropShadowEffect>
 #include <QDebug>
+#include <QMetaObject>
+#include <QDateTime>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#endif
+
+static void playerCallback(void* userdata, int state, double position, double duration) {
+    player* self = static_cast<player*>(userdata);
+    QMetaObject::invokeMethod(self, [self, state, position, duration]() {
+        self->onPlayerProgress(state, position, duration);
+    }, Qt::QueuedConnection);
+}
 
 
 player::player(QWidget *parent)
@@ -17,6 +31,11 @@ player::player(QWidget *parent)
 
 player::~player()
 {
+    if (ffPlayer) {
+        ffPlayer->stop();
+        delete ffPlayer;
+        ffPlayer = nullptr;
+    }
 }
 
 void player::setupUI()
@@ -171,7 +190,7 @@ void player::setupUI()
 
     progressSlider = new QSlider(Qt::Horizontal, this);
     progressSlider->setObjectName("progressSlider");
-    progressSlider->setRange(0, totalSeconds);
+    progressSlider->setRange(0, totalSeconds * 1000);
     progressSlider->setValue(0);
     controlLayout->addWidget(progressSlider, 1);
 
@@ -203,9 +222,6 @@ void player::setupUI()
 
     mainLayout->addWidget(controlBar, 0);
 
-    timer = new QTimer(this);
-    connect(timer, &QTimer::timeout, this, &player::updateTimeLabel);
-
     // Window button connections
     connect(minBtn, &QPushButton::clicked, this, &QWidget::showMinimized);
     connect(maximizeBtn, &QPushButton::clicked, this, [this]() {
@@ -218,7 +234,19 @@ void player::setupConnections()
 {
     connect(playBtn, &QPushButton::clicked, this, &player::onPlayClicked);
     connect(stopBtn, &QPushButton::clicked, this, &player::onStopClicked);
-    connect(progressSlider, &QSlider::sliderMoved, this, &player::onProgressChanged);
+    connect(progressSlider, &QSlider::valueChanged, this, &player::onProgressChanged);
+    connect(progressSlider, &QSlider::sliderPressed, this, [this]() { isSeeking = true; });
+    connect(progressSlider, &QSlider::sliderReleased, this, [this]() {
+        isSeeking = false;
+        if (ffPlayer) {
+            // Seek once to the final release position (slider is in ms). Seeking
+            // during the drag floods the op queue and stream_seek drops all but
+            // the first, so the final target would be lost.
+            seekTargetMs = progressSlider->value();
+            lastSeekTime = QDateTime::currentMSecsSinceEpoch();
+            ffPlayer->seek(seekTargetMs / 1000.0);
+        }
+    });
     connect(volumeSlider, &QSlider::valueChanged, this, &player::onVolumeChanged);
     connect(fullscreenBtn, &QPushButton::clicked, this, &player::onFullscreenClicked);
 }
@@ -247,24 +275,56 @@ QString player::formatTime(int seconds)
 
 void player::onPlayClicked()
 {
+    if (!ffPlayer) {
+        // Create FFPlayer instance with video file and embed in videoArea
+        const char* filename = "C:\\Users\\admin\\Downloads\\校园门口交通乱象.mp4";
+#ifdef Q_OS_WIN
+        void* hwnd = (void*)videoArea->winId();
+#else
+        void* hwnd = nullptr;
+#endif
+        int w = videoArea->width();
+        int h = videoArea->height();
+
+        ffPlayer = new FFPlayer(filename, hwnd, w, h);
+        ffPlayer->setCallback(playerCallback, this);
+        int ret = ffPlayer->play();
+        if (ret != 0) {
+            qWarning() << "Failed to start playback";
+            delete ffPlayer;
+            ffPlayer = nullptr;
+            return;
+        }
+    }
+
     isPlaying = !isPlaying;
     if (isPlaying) {
+        if (ffPlayer && ffPlayer->isPaused()) {
+            ffPlayer->resume();
+        }
         playBtn->setIcon(QIcon(":/icons/pause.png"));
         playBtn->setToolTip("Pause");
-        timer->start(1000);
     } else {
+        if (ffPlayer && ffPlayer->isRunning()) {
+            ffPlayer->pause();
+        }
         playBtn->setIcon(QIcon(":/icons/play.png"));
         playBtn->setToolTip("Play");
-        timer->stop();
     }
 }
 
 void player::onStopClicked()
 {
+    if (ffPlayer) {
+        ffPlayer->stop();
+        delete ffPlayer;
+        ffPlayer = nullptr;
+    }
     isPlaying = false;
+    isSeeking = false;
+    seekTargetMs = -1;
     playBtn->setIcon(QIcon(":/icons/play.png"));
     playBtn->setToolTip("Play");
-    timer->stop();
     currentSeconds = 0;
     progressSlider->setValue(0);
     currentTimeLabel->setText("00:00");
@@ -272,13 +332,17 @@ void player::onStopClicked()
 
 void player::onProgressChanged(int value)
 {
-    currentSeconds = value;
-    currentTimeLabel->setText(formatTime(currentSeconds));
+    // Slider is in milliseconds. During a drag/click this only updates the time
+    // label; the actual seek is issued once on sliderReleased so the decoder
+    // gets the final target.
+    currentTimeLabel->setText(formatTime(value / 1000));
 }
 
 void player::onVolumeChanged(int value)
 {
-    (void)value;
+    if (ffPlayer) {
+        ffPlayer->setVolume(value);
+    }
 }
 
 void player::onFullscreenClicked()
@@ -290,13 +354,63 @@ void player::onFullscreenClicked()
     }
 }
 
-void player::updateTimeLabel()
+void player::onPlayerProgress(int state, double position, double duration)
 {
-    if (currentSeconds < totalSeconds) {
-        currentSeconds++;
-        progressSlider->setValue(currentSeconds);
-        currentTimeLabel->setText(formatTime(currentSeconds));
-    } else {
-        onStopClicked();
+    // Update duration if needed
+    if (duration > 0 && totalSeconds != (int)duration) {
+        totalSeconds = (int)duration;
+        progressSlider->setRange(0, totalSeconds * 1000);
+        totalTimeLabel->setText(formatTime(totalSeconds));
+    }
+
+    // Update position. After a seek, keep the handle pinned at the release
+    // position until the decoder reports a position near the target (or a 2 s
+    // timeout), so the handle never snaps back to the pre-seek position.
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    int posMs = (int)(position * 1000);
+    bool settled = (seekTargetMs < 0) ||
+                   qAbs(posMs - seekTargetMs) < 1000 ||
+                   (now - lastSeekTime > 2000);
+    if (!isSeeking && settled) {
+        seekTargetMs = -1;
+        progressSlider->setValue(posMs);
+        currentTimeLabel->setText(formatTime(posMs / 1000));
+    }
+
+    // Update state
+    switch (state) {
+    case FFPLAYER_STATE_PLAYING:
+        if (!isPlaying) {
+            isPlaying = true;
+            playBtn->setIcon(QIcon(":/icons/pause.png"));
+            playBtn->setToolTip("Pause");
+        }
+        break;
+    case FFPLAYER_STATE_PAUSED:
+        if (isPlaying) {
+            isPlaying = false;
+            playBtn->setIcon(QIcon(":/icons/play.png"));
+            playBtn->setToolTip("Play");
+        }
+        break;
+    case FFPLAYER_STATE_FINISHED:
+    case FFPLAYER_STATE_STOPPED:
+        if (isPlaying) {
+            isPlaying = false;
+            playBtn->setIcon(QIcon(":/icons/play.png"));
+            playBtn->setToolTip("Play");
+        }
+        if (state == FFPLAYER_STATE_FINISHED) {
+            // Auto-stop on finish
+            if (ffPlayer) {
+                ffPlayer->stop();
+                delete ffPlayer;
+                ffPlayer = nullptr;
+            }
+            currentSeconds = 0;
+            progressSlider->setValue(0);
+            currentTimeLabel->setText("00:00");
+        }
+        break;
     }
 }

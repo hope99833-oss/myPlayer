@@ -55,9 +55,9 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>FFMPEG_BUILD_DLL;_DEBUG;_CRT_SECURE_NO_WARNINGS;_WIN32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)fftools;D:\FFmpeg;D:\FFmpeg\libavcodec;D:\FFmpeg\libavformat;D:\FFmpeg\libavutil;D:\FFmpeg\libswresample;D:\FFmpeg\libswscale;D:\FFmpeg\libavfilter;D:\FFmpeg\libavdevice;$(ProjectDir)include\sdl2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)fftools;D:\FFmpeg;D:\FFmpeg\compat;D:\FFmpeg\compat\atomics\win32;$(ProjectDir)include\sdl2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>false</ConformanceMode>
-      <AdditionalOptions>/std:c11 /experimental:c11atomics %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/std:c11 /utf-8 %(AdditionalOptions)</AdditionalOptions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
@@ -72,9 +72,9 @@
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>false</SDLCheck>
       <PreprocessorDefinitions>FFMPEG_BUILD_DLL;NDEBUG;_CRT_SECURE_NO_WARNINGS;_WIN32;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)fftools;D:\FFmpeg;D:\FFmpeg\libavcodec;D:\FFmpeg\libavformat;D:\FFmpeg\libavutil;D:\FFmpeg\libswresample;D:\FFmpeg\libswscale;D:\FFmpeg\libavfilter;D:\FFmpeg\libavdevice;$(ProjectDir)include\sdl2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)fftools;D:\FFmpeg;D:\FFmpeg\compat;D:\FFmpeg\compat\atomics\win32;$(ProjectDir)include\sdl2;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ConformanceMode>false</ConformanceMode>
-      <AdditionalOptions>/std:c11 /experimental:c11atomics %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalOptions>/std:c11 /utf-8 %(AdditionalOptions)</AdditionalOptions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
     <Link>
@@ -138,6 +138,12 @@
     <ClInclude Include="compat\w32dlfcn.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ItemDefinitionGroup>
+    <PostBuildEvent>
+      <Message>Syncing ffmpeg.dll to player output directory</Message>
+      <Command>xcopy /Y /Q "$(TargetPath)" "$(SolutionDir)x64\$(Configuration)\"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>

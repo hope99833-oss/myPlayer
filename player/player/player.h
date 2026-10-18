@@ -6,7 +6,8 @@
 #include <QPushButton>
 #include <QSlider>
 #include <QLabel>
-#include <QTimer>
+
+class FFPlayer;
 
 class player : public QWidget
 {
@@ -15,14 +16,14 @@ class player : public QWidget
 public:
     player(QWidget *parent = nullptr);
     ~player();
+    void onPlayerProgress(int state, double position, double duration);
 
-private slots:
+public slots:
     void onPlayClicked();
     void onStopClicked();
     void onProgressChanged(int value);
     void onVolumeChanged(int value);
     void onFullscreenClicked();
-    void updateTimeLabel();
 
 private:
     void setupUI();
@@ -41,9 +42,12 @@ private:
     QSlider* volumeSlider;
     QLabel* currentTimeLabel;
     QLabel* totalTimeLabel;
-    QTimer* timer;
 
+    FFPlayer* ffPlayer = nullptr;
     bool isPlaying = false;
     int currentSeconds = 0;
     int totalSeconds = 300;
+    bool isSeeking = false;
+    qint64 lastSeekTime = 0;
+    int seekTargetMs = -1;
 };
