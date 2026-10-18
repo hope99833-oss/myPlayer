@@ -273,6 +273,16 @@ QString player::formatTime(int seconds)
     return QString("%1:%2").arg(mins, 2, 10, QChar('0')).arg(secs, 2, 10, QChar('0'));
 }
 
+void player::setProgressMs(int ms)
+{
+    // Programmatic updates must not reach onProgressChanged, otherwise the
+    // playback callback would trigger seeks.
+    progressSlider->blockSignals(true);
+    progressSlider->setValue(ms);
+    progressSlider->blockSignals(false);
+    currentTimeLabel->setText(formatTime(ms / 1000));
+}
+
 void player::onPlayClicked()
 {
     if (!ffPlayer) {
@@ -326,16 +336,21 @@ void player::onStopClicked()
     playBtn->setIcon(QIcon(":/icons/play.png"));
     playBtn->setToolTip("Play");
     currentSeconds = 0;
-    progressSlider->setValue(0);
-    currentTimeLabel->setText("00:00");
+    setProgressMs(0);
 }
 
 void player::onProgressChanged(int value)
 {
-    // Slider is in milliseconds. During a drag/click this only updates the time
-    // label; the actual seek is issued once on sliderReleased so the decoder
-    // gets the final target.
+    // Slider is in milliseconds. Fires only for user interaction (programmatic
+    // updates are blocked in setProgressMs).
     currentTimeLabel->setText(formatTime(value / 1000));
+    if (!isSeeking && ffPlayer) {
+        // Groove click or keyboard step (no handle drag): seek immediately.
+        // Handle drags seek once on sliderReleased instead.
+        seekTargetMs = value;
+        lastSeekTime = QDateTime::currentMSecsSinceEpoch();
+        ffPlayer->seek(value / 1000.0);
+    }
 }
 
 void player::onVolumeChanged(int value)
@@ -359,7 +374,9 @@ void player::onPlayerProgress(int state, double position, double duration)
     // Update duration if needed
     if (duration > 0 && totalSeconds != (int)duration) {
         totalSeconds = (int)duration;
+        progressSlider->blockSignals(true);
         progressSlider->setRange(0, totalSeconds * 1000);
+        progressSlider->blockSignals(false);
         totalTimeLabel->setText(formatTime(totalSeconds));
     }
 
@@ -373,8 +390,7 @@ void player::onPlayerProgress(int state, double position, double duration)
                    (now - lastSeekTime > 2000);
     if (!isSeeking && settled) {
         seekTargetMs = -1;
-        progressSlider->setValue(posMs);
-        currentTimeLabel->setText(formatTime(posMs / 1000));
+        setProgressMs(posMs);
     }
 
     // Update state
@@ -408,8 +424,7 @@ void player::onPlayerProgress(int state, double position, double duration)
                 ffPlayer = nullptr;
             }
             currentSeconds = 0;
-            progressSlider->setValue(0);
-            currentTimeLabel->setText("00:00");
+            setProgressMs(0);
         }
         break;
     }

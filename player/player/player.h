@@ -30,6 +30,7 @@ private:
     void setupConnections();
     QPushButton* createIconButton(const QString& iconPath, const QString& tooltip, int size = 36);
     QString formatTime(int seconds);
+    void setProgressMs(int ms);
 
     QWidget* videoArea;
     QPushButton* playBtn;
