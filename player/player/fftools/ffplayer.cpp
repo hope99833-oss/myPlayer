@@ -1669,28 +1669,29 @@ static void seek_log(const char *fmt, ...)
 /* seek in the stream */
 static void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes)
 {
-    if (!is->seek_req) {
-        is->seek_pos = pos;
-        is->seek_rel = rel;
-        is->seek_flags &= ~AVSEEK_FLAG_BYTE;
-        if (by_bytes)
-            is->seek_flags |= AVSEEK_FLAG_BYTE;
-        else {
-            /* For timestamp-based seeks, enable frame-accurate seeking */
-            is->seek_flags |= AVSEEK_FLAG_BACKWARD;
-            is->seek_target_ts = pos;
-            is->seek_accurate_video = (is->video_stream >= 0);
-            is->seek_accurate_audio = (is->audio_stream >= 0);
-        }
-        is->seek_req = 1;
-        seek_log("[seek] stream_seek accepted target=%.3f flags=0x%x acc_v=%d acc_a=%d\n",
-                 (double)pos / AV_TIME_BASE, is->seek_flags,
-                 is->seek_accurate_video, is->seek_accurate_audio);
-        SDL_CondSignal(is->continue_read_thread);
-    } else {
-        seek_log("[seek] stream_seek DROPPED (seek_req pending) target=%.3f\n",
-                 (double)pos / AV_TIME_BASE);
+    /* Overwrite any pending seek so the newest target always wins; dropping
+       rapid seeks made clicks and scrubs feel unresponsive. */
+    int pending = is->seek_req;
+    is->seek_rel = rel;
+    is->seek_flags &= ~AVSEEK_FLAG_BYTE;
+    if (by_bytes)
+        is->seek_flags |= AVSEEK_FLAG_BYTE;
+    else {
+        /* For timestamp-based seeks, enable frame-accurate seeking */
+        is->seek_flags |= AVSEEK_FLAG_BACKWARD;
+        is->seek_target_ts = pos;
+        is->seek_accurate_video = (is->video_stream >= 0);
+        is->seek_accurate_audio = (is->audio_stream >= 0);
     }
+    /* seek_pos last: read_thread snapshots it first, so it never sees a new
+       position paired with stale flags/target */
+    is->seek_pos = pos;
+    is->seek_req = 1;
+    seek_log("[seek] stream_seek %s target=%.3f flags=0x%x acc_v=%d acc_a=%d\n",
+             pending ? "coalesced" : "accepted", (double)pos / AV_TIME_BASE,
+             is->seek_flags, is->seek_accurate_video, is->seek_accurate_audio);
+    if (!pending)
+        SDL_CondSignal(is->continue_read_thread);
 }
 
 /* pause or resume the video */

@@ -344,11 +344,21 @@ void player::onProgressChanged(int value)
     // Slider is in milliseconds. Fires only for user interaction (programmatic
     // updates are blocked in setProgressMs).
     currentTimeLabel->setText(formatTime(value / 1000));
-    if (!isSeeking && ffPlayer) {
+    if (!ffPlayer)
+        return;
+    qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (isSeeking) {
+        // Live scrub while dragging the handle: throttle so we don't flood the
+        // op queue; the exact target is sent on sliderReleased.
+        if (now - lastSeekTime >= 200) {
+            lastSeekTime = now;
+            seekTargetMs = value;
+            ffPlayer->seek(value / 1000.0);
+        }
+    } else {
         // Groove click or keyboard step (no handle drag): seek immediately.
-        // Handle drags seek once on sliderReleased instead.
         seekTargetMs = value;
-        lastSeekTime = QDateTime::currentMSecsSinceEpoch();
+        lastSeekTime = now;
         ffPlayer->seek(value / 1000.0);
     }
 }
