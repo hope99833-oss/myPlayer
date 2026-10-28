@@ -22,49 +22,46 @@
 
 #include "ffmpeg.h"
 
-static int nb_hw_devices;
-static HWDevice **hw_devices;
-
-HWDevice *hw_device_get_by_type(enum AVHWDeviceType type)
+HWDevice *hw_device_get_by_type(FFmpegContext *ctx, enum AVHWDeviceType type)
 {
     HWDevice *found = NULL;
     int i;
-    for (i = 0; i < nb_hw_devices; i++) {
-        if (hw_devices[i]->type == type) {
+    for (i = 0; i < ctx->nb_hw_devices; i++) {
+        if (ctx->hw_devices[i]->type == type) {
             if (found)
                 return NULL;
-            found = hw_devices[i];
+            found = ctx->hw_devices[i];
         }
     }
     return found;
 }
 
-HWDevice *hw_device_get_by_name(const char *name)
+HWDevice *hw_device_get_by_name(FFmpegContext *ctx, const char *name)
 {
     int i;
-    for (i = 0; i < nb_hw_devices; i++) {
-        if (!strcmp(hw_devices[i]->name, name))
-            return hw_devices[i];
+    for (i = 0; i < ctx->nb_hw_devices; i++) {
+        if (!strcmp(ctx->hw_devices[i]->name, name))
+            return ctx->hw_devices[i];
     }
     return NULL;
 }
 
-static HWDevice *hw_device_add(void)
+static HWDevice *hw_device_add(FFmpegContext *ctx)
 {
     int err;
-    err = av_reallocp_array(&hw_devices, nb_hw_devices + 1,
-                            sizeof(*hw_devices));
+    err = av_reallocp_array(&ctx->hw_devices, ctx->nb_hw_devices + 1,
+                            sizeof(*ctx->hw_devices));
     if (err) {
-        nb_hw_devices = 0;
+        ctx->nb_hw_devices = 0;
         return NULL;
     }
-    hw_devices[nb_hw_devices] = av_mallocz(sizeof(HWDevice));
-    if (!hw_devices[nb_hw_devices])
+    ctx->hw_devices[ctx->nb_hw_devices] = av_mallocz(sizeof(HWDevice));
+    if (!ctx->hw_devices[ctx->nb_hw_devices])
         return NULL;
-    return hw_devices[nb_hw_devices++];
+    return ctx->hw_devices[ctx->nb_hw_devices++];
 }
 
-static char *hw_device_default_name(enum AVHWDeviceType type)
+static char *hw_device_default_name(FFmpegContext *ctx, enum AVHWDeviceType type)
 {
     // Make an automatic name of the form "type%d".  We arbitrarily
     // limit at 1000 anonymous devices of the same type - there is
@@ -79,7 +76,7 @@ static char *hw_device_default_name(enum AVHWDeviceType type)
         return NULL;
     for (index = 0; index < index_limit; index++) {
         snprintf(name, index_pos + 4, "%s%d", type_name, index);
-        if (!hw_device_get_by_name(name))
+        if (!hw_device_get_by_name(ctx, name))
             break;
     }
     if (index >= index_limit) {
@@ -89,7 +86,7 @@ static char *hw_device_default_name(enum AVHWDeviceType type)
     return name;
 }
 
-int hw_device_init_from_string(const char *arg, HWDevice **dev_out)
+int hw_device_init_from_string(FFmpegContext *ctx, const char *arg, HWDevice **dev_out)
 {
     // "type=name"
     // "type=name,key=value,key2=value2"
@@ -131,14 +128,14 @@ int hw_device_init_from_string(const char *arg, HWDevice **dev_out)
             err = AVERROR(ENOMEM);
             goto fail;
         }
-        if (hw_device_get_by_name(name)) {
+        if (hw_device_get_by_name(ctx, name)) {
             errmsg = "named device already exists";
             goto invalid;
         }
 
         p += 1 + k;
     } else {
-        name = hw_device_default_name(type);
+        name = hw_device_default_name(ctx, type);
         if (!name) {
             err = AVERROR(ENOMEM);
             goto fail;
@@ -180,7 +177,7 @@ int hw_device_init_from_string(const char *arg, HWDevice **dev_out)
     } else if (*p == '@') {
         // Derive from existing device.
 
-        src = hw_device_get_by_name(p + 1);
+        src = hw_device_get_by_name(ctx, p + 1);
         if (!src) {
             errmsg = "invalid source device name";
             goto invalid;
@@ -207,7 +204,7 @@ int hw_device_init_from_string(const char *arg, HWDevice **dev_out)
         goto invalid;
     }
 
-    dev = hw_device_add();
+    dev = hw_device_add(ctx);
     if (!dev) {
         err = AVERROR(ENOMEM);
         goto fail;
@@ -240,7 +237,7 @@ fail:
     goto done;
 }
 
-int hw_device_init_from_type(enum AVHWDeviceType type,
+int hw_device_init_from_type(FFmpegContext *ctx, enum AVHWDeviceType type,
                              const char *device,
                              HWDevice **dev_out)
 {
@@ -249,7 +246,7 @@ int hw_device_init_from_type(enum AVHWDeviceType type,
     char *name;
     int err;
 
-    name = hw_device_default_name(type);
+    name = hw_device_default_name(ctx, type);
     if (!name) {
         err = AVERROR(ENOMEM);
         goto fail;
@@ -262,7 +259,7 @@ int hw_device_init_from_type(enum AVHWDeviceType type,
         goto fail;
     }
 
-    dev = hw_device_add();
+    dev = hw_device_add(ctx);
     if (!dev) {
         err = AVERROR(ENOMEM);
         goto fail;
@@ -283,33 +280,33 @@ fail:
     return err;
 }
 
-void hw_device_free_all(void)
+void hw_device_free_all(FFmpegContext *ctx)
 {
     int i;
-    for (i = 0; i < nb_hw_devices; i++) {
-        av_freep(&hw_devices[i]->name);
-        av_buffer_unref(&hw_devices[i]->device_ref);
-        av_freep(&hw_devices[i]);
+    for (i = 0; i < ctx->nb_hw_devices; i++) {
+        av_freep(&ctx->hw_devices[i]->name);
+        av_buffer_unref(&ctx->hw_devices[i]->device_ref);
+        av_freep(&ctx->hw_devices[i]);
     }
-    av_freep(&hw_devices);
-    nb_hw_devices = 0;
+    av_freep(&ctx->hw_devices);
+    ctx->nb_hw_devices = 0;
 }
 
-AVBufferRef *hw_device_for_filter(void)
+AVBufferRef *hw_device_for_filter(FFmpegContext *ctx)
 {
     // Pick the last hardware device if the user doesn't pick the device for
     // filters explicitly with the filter_hw_device option.
-    if (filter_hw_device)
-        return filter_hw_device->device_ref;
-    else if (nb_hw_devices > 0) {
-        HWDevice *dev = hw_devices[nb_hw_devices - 1];
+    if (ctx->filter_hw_device)
+        return ctx->filter_hw_device->device_ref;
+    else if (ctx->nb_hw_devices > 0) {
+        HWDevice *dev = ctx->hw_devices[ctx->nb_hw_devices - 1];
 
-        if (nb_hw_devices > 1)
+        if (ctx->nb_hw_devices > 1)
             av_log(NULL, AV_LOG_WARNING, "There are %d hardware devices. device "
                    "%s of type %s is picked for filters by default. Set hardware "
                    "device explicitly with the filter_hw_device option if device "
                    "%s is not usable for filters.\n",
-                   nb_hw_devices, dev->name,
+                   ctx->nb_hw_devices, dev->name,
                    av_hwdevice_get_type_name(dev->type), dev->name);
 
         return dev->device_ref;

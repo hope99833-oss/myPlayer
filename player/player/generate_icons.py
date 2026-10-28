@@ -99,6 +99,18 @@ def draw_fullscreen(draw, s):
     draw.rectangle([s - m - thickness, s - m - arm, s - m, s - m], fill=color)
 
 
+def draw_open(draw, s):
+    color = (255, 255, 255, 255)
+    # Folder back plate with its tab.
+    draw.rectangle([int(s * 0.10), int(s * 0.30), int(s * 0.66), int(s * 0.42)], fill=color)
+    draw.rectangle([int(s * 0.10), int(s * 0.22), int(s * 0.38), int(s * 0.34)], fill=color)
+    # Open front flap.
+    draw.polygon([(int(s * 0.10), int(s * 0.42)),
+                  (int(s * 0.92), int(s * 0.42)),
+                  (int(s * 0.76), int(s * 0.78)),
+                  (int(s * 0.06), int(s * 0.78))], fill=color)
+
+
 ICONS = {
     "play": draw_play,
     "pause": draw_pause,
@@ -107,6 +119,7 @@ ICONS = {
     "next": draw_next,
     "volume": draw_volume,
     "fullscreen": draw_fullscreen,
+    "open": draw_open,
 }
 
 

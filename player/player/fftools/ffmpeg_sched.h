@@ -90,6 +90,18 @@ struct AVPacket;
 
 typedef struct Scheduler Scheduler;
 
+struct FFmpegContext;
+
+/**
+ * Attach/detach the job context owning this scheduler.
+ *
+ * Any code that holds a Scheduler can retrieve the owning FFmpegContext with
+ * ffmpeg_sched_get_ctx(), which is how the per-job state is reached from the
+ * scheduler worker threads.
+ */
+void ffmpeg_sched_set_ctx(Scheduler *sch, struct FFmpegContext *ctx);
+struct FFmpegContext *ffmpeg_sched_get_ctx(Scheduler *sch);
+
 enum SchedulerNodeType {
     SCH_NODE_TYPE_NONE = 0,
     SCH_NODE_TYPE_DEMUX,

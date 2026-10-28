@@ -55,10 +55,27 @@ extern int hide_banner;
 void init_dynload(void);
 
 /**
+ * In library/task mode, override the argument list used by the option parser
+ * so it reads the caller's argv instead of the host process command line.
+ * Pass argc==0 / argv==NULL to clear the override.
+ */
+void cmdutils_set_argv(int argc, char **argv);
+
+/**
  * Uninitialize the cmdutils option system, in particular
  * free the *_opts contexts and their contents.
  */
 void uninit_opts(void);
+
+/**
+ * Serialise access to the process-wide option dictionaries (sws_dict,
+ * swr_opts, format_opts, codec_opts, hide_banner). The option parser keeps
+ * this state in globals, so callers that may run several ffmpeg tasks
+ * concurrently must hold this lock while parsing (and while calling
+ * uninit_opts()), then release it before doing the actual transcode work.
+ */
+void ffmpeg_options_lock(void);
+void ffmpeg_options_unlock(void);
 
 /**
  * Trivial log callback.

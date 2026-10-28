@@ -31,7 +31,9 @@ public:
     void resume();
     void seek(double seconds);
     void setVolume(int volume);
+    void setMute(bool muted);
     void toggleMute();
+    bool isMuted() const;
     void toggleFullScreen();
     void setCallback(FFPlayerCallback callback, void* userdata);
 

@@ -273,6 +273,9 @@ enum SchedulerState {
 struct Scheduler {
     const AVClass      *class;
 
+    /* owning job context, see ffmpeg_sched_get_ctx() */
+    struct FFmpegContext *ffctx;
+
     SchDemux           *demux;
     unsigned         nb_demux;
 
@@ -611,6 +614,16 @@ static const AVClass scheduler_class = {
     .class_name = "Scheduler",
     .version    = LIBAVUTIL_VERSION_INT,
 };
+
+void ffmpeg_sched_set_ctx(Scheduler *sch, struct FFmpegContext *ctx)
+{
+    sch->ffctx = ctx;
+}
+
+struct FFmpegContext *ffmpeg_sched_get_ctx(Scheduler *sch)
+{
+    return sch->ffctx;
+}
 
 Scheduler *sch_alloc(void)
 {
@@ -1194,7 +1207,7 @@ static int mux_task_start(SchMux *mux)
     return 0;
 }
 
-int print_sdp(const char *filename);
+int print_sdp(struct FFmpegContext *ctx, const char *filename);
 
 static int mux_init(Scheduler *sch, SchMux *mux)
 {
@@ -1210,7 +1223,7 @@ static int mux_init(Scheduler *sch, SchMux *mux)
         if (sch->nb_mux_ready < sch->nb_mux)
             return 0;
 
-        ret = print_sdp(sch->sdp_filename);
+        ret = print_sdp(ffmpeg_sched_get_ctx(sch), sch->sdp_filename);
         if (ret < 0) {
             av_log(sch, AV_LOG_ERROR, "Error writing the SDP.\n");
             return ret;

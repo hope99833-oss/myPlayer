@@ -1,5 +1,5 @@
 @echo off
-set INCLUDE=D:\myPlayer\player\player\include;D:\myPlayer\player\player\include\sdl2;D:\myPlayer\player\player\fftools;D:\FFmpeg;D:\FFmpeg\compat;D:\FFmpeg\compat\atomics\win32;C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\include;C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\shared;C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um
+set INCLUDE=D:\myPlayer\player\player;D:\myPlayer\player\player\include;D:\myPlayer\player\player\include\sdl2;D:\myPlayer\player\player\fftools;D:\FFmpeg;D:\FFmpeg\compat;D:\FFmpeg\compat\atomics\win32;C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\include;C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\ucrt;C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\shared;C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\um
 set LIB=D:\myPlayer\player\player\lib;D:\myPlayer\player\player\bin;C:\Program Files\Microsoft Visual Studio\18\Community\VC\Tools\MSVC\14.44.35207\lib\x64;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\ucrt\x64;C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64
 cd /d D:\myPlayer\player\player
 

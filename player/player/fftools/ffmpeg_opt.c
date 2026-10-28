@@ -49,52 +49,11 @@
 #include "libavutil/stereo3d.h"
 #include "graph/graphprint.h"
 
-HWDevice *filter_hw_device;
-
-char *vstats_filename;
-
-float dts_delta_threshold   = 10;
-float dts_error_threshold   = 3600*30;
-
-float frame_drop_threshold = 0;
-int do_benchmark      = 0;
-int do_benchmark_all  = 0;
-int do_hex_dump       = 0;
-int do_pkt_dump       = 0;
-int copy_ts           = 0;
-int start_at_zero     = 0;
-int copy_tb           = -1;
-int debug_ts          = 0;
-int exit_on_error     = 0;
-int abort_on_flags    = 0;
-int print_stats       = -1;
-int stdin_interaction = 1;
-float max_error_rate  = 2.0/3;
-char *filter_nbthreads;
-int filter_complex_nbthreads = 0;
-int filter_buffered_frames = 0;
-int vstats_version = 2;
-int print_graphs = 0;
-char *print_graphs_file = NULL;
-char *print_graphs_format = NULL;
-int auto_conversion_filters = 1;
-int64_t stats_period = 500000;
-
-
-static int file_overwrite     = 0;
-static int no_file_overwrite  = 0;
-int ignore_unknown_streams = 0;
-int copy_unknown_streams = 0;
-int recast_media = 0;
-
-// this struct is passed as the optctx argument
-// to func_arg() for global options
-typedef struct GlobalOptionsContext {
-    Scheduler      *sch;
-
-    char          **filtergraphs;
-    int          nb_filtergraphs;
-} GlobalOptionsContext;
+/* All option state that used to live in file-scope globals is now stored in
+ * the per-job FFmpegContext (see ffmpeg.h), so that several jobs can be
+ * parsed and run concurrently. Global options are parsed with the
+ * FFmpegContext itself as optctx; per-file options receive an OptionsContext
+ * which carries a pointer to its owning FFmpegContext. */
 
 static void uninit_options(OptionsContext *o)
 {
@@ -102,7 +61,10 @@ static void uninit_options(OptionsContext *o)
     for (const OptionDef *po = options; po->name; po++) {
         void *dst;
 
-        if (!(po->flags & OPT_FLAG_OFFSET))
+        /* only per-file options are stored an in OptionsContext; global
+         * options use OFFSET into FFmpegContext and are freed with the job
+         * context, so they must not be interpreted against this struct */
+        if (!(po->flags & OPT_FLAG_OFFSET) || !(po->flags & OPT_PERFILE))
             continue;
 
         dst = (uint8_t*)o + po->u.off;
@@ -371,10 +333,10 @@ int parse_and_set_vsync(const char *arg, enum VideoSyncMethod *vsync_var, int fi
 }
 
 /* Correct input file start times based on enabled streams */
-static void correct_input_start_times(void)
+static void correct_input_start_times(FFmpegContext *ctx)
 {
-    for (int i = 0; i < nb_input_files; i++) {
-        InputFile       *ifile = input_files[i];
+    for (int i = 0; i < ctx->nb_input_files; i++) {
+        InputFile       *ifile = ctx->input_files[i];
         AVFormatContext    *is = ifile->ctx;
         int64_t new_start_time = INT64_MAX, diff, abs_start_seek;
 
@@ -395,12 +357,12 @@ static void correct_input_start_times(void)
         if (diff) {
             av_log(NULL, AV_LOG_VERBOSE, "Correcting start time of Input #%d by %"PRId64" us.\n", i, diff);
             ifile->start_time_effective = new_start_time;
-            if (copy_ts && start_at_zero)
+            if (ctx->copy_ts && ctx->start_at_zero)
                 ifile->ts_offset = -new_start_time;
-            else if (!copy_ts) {
+            else if (!ctx->copy_ts) {
                 abs_start_seek = is->start_time + ((ifile->start_time != AV_NOPTS_VALUE) ? ifile->start_time : 0);
                 ifile->ts_offset = abs_start_seek > new_start_time ? -abs_start_seek : -new_start_time;
-            } else if (copy_ts)
+            } else if (ctx->copy_ts)
                 ifile->ts_offset = 0;
 
             ifile->ts_offset += ifile->input_ts_offset;
@@ -408,26 +370,26 @@ static void correct_input_start_times(void)
     }
 }
 
-static int apply_sync_offsets(void)
+static int apply_sync_offsets(FFmpegContext *ctx)
 {
-    for (int i = 0; i < nb_input_files; i++) {
-        InputFile *ref, *self = input_files[i];
+    for (int i = 0; i < ctx->nb_input_files; i++) {
+        InputFile *ref, *self = ctx->input_files[i];
         int64_t adjustment;
         int64_t self_start_time, ref_start_time, self_seek_start, ref_seek_start;
         int start_times_set = 1;
 
         if (self->input_sync_ref == -1 || self->input_sync_ref == i) continue;
-        if (self->input_sync_ref >= nb_input_files || self->input_sync_ref < -1) {
+        if (self->input_sync_ref >= ctx->nb_input_files || self->input_sync_ref < -1) {
             av_log(NULL, AV_LOG_FATAL, "-isync for input %d references non-existent input %d.\n", i, self->input_sync_ref);
             return AVERROR(EINVAL);
         }
 
-        if (copy_ts && !start_at_zero) {
+        if (ctx->copy_ts && !ctx->start_at_zero) {
             av_log(NULL, AV_LOG_FATAL, "Use of -isync requires that start_at_zero be set if copyts is set.\n");
             return AVERROR(EINVAL);
         }
 
-        ref = input_files[self->input_sync_ref];
+        ref = ctx->input_files[self->input_sync_ref];
         if (ref->input_sync_ref != -1 && ref->input_sync_ref != self->input_sync_ref) {
             av_log(NULL, AV_LOG_ERROR, "-isync for input %d references a resynced input %d. Sync not set.\n", i, self->input_sync_ref);
             continue;
@@ -447,7 +409,7 @@ static int apply_sync_offsets(void)
             self_seek_start = self->start_time == AV_NOPTS_VALUE ? 0 : self->start_time;
             ref_seek_start  =  ref->start_time == AV_NOPTS_VALUE ? 0 :  ref->start_time;
 
-            adjustment = (self_start_time - ref_start_time) + !copy_ts*(self_seek_start - ref_seek_start) + ref->input_ts_offset;
+            adjustment = (self_start_time - ref_start_time) + !ctx->copy_ts*(self_seek_start - ref_seek_start) + ref->input_ts_offset;
 
             self->ts_offset += adjustment;
 
@@ -462,13 +424,15 @@ static int apply_sync_offsets(void)
 
 static int opt_filter_threads(void *optctx, const char *opt, const char *arg)
 {
-    av_free(filter_nbthreads);
-    filter_nbthreads = av_strdup(arg);
+    FFmpegContext *ctx = optctx;
+    av_free(ctx->filter_nbthreads);
+    ctx->filter_nbthreads = av_strdup(arg);
     return 0;
 }
 
 static int opt_abort_on(void *optctx, const char *opt, const char *arg)
 {
+    FFmpegContext *ctx = optctx;
     static const AVOption opts[] = {
         { "abort_on"           , NULL, 0, AV_OPT_TYPE_FLAGS, { .i64 = 0 }, INT64_MIN, (double)INT64_MAX,   .unit = "flags" },
         { "empty_output"       , NULL, 0, AV_OPT_TYPE_CONST, { .i64 = ABORT_ON_FLAG_EMPTY_OUTPUT        }, .unit = "flags" },
@@ -483,11 +447,12 @@ static int opt_abort_on(void *optctx, const char *opt, const char *arg)
     };
     const AVClass *pclass = &class;
 
-    return av_opt_eval_flags(&pclass, &opts[0], arg, &abort_on_flags);
+    return av_opt_eval_flags(&pclass, &opts[0], arg, &ctx->abort_on_flags);
 }
 
 static int opt_stats_period(void *optctx, const char *opt, const char *arg)
 {
+    FFmpegContext *ctx = optctx;
     int64_t user_stats_period;
     int ret = av_parse_time(&user_stats_period, arg, 1);
     if (ret < 0)
@@ -498,7 +463,7 @@ static int opt_stats_period(void *optctx, const char *opt, const char *arg)
         return AVERROR(EINVAL);
     }
 
-    stats_period = user_stats_period;
+    ctx->stats_period = user_stats_period;
     av_log(NULL, AV_LOG_INFO, "ffmpeg stats and -progress period set to %s.\n", arg);
 
     return 0;
@@ -565,7 +530,7 @@ static int opt_map(void *optctx, const char *opt, const char *arg)
 
         m->group_index = -1;
         file_idx = strtol(arg, &endptr, 0);
-        if (file_idx >= nb_input_files || file_idx < 0)
+        if (file_idx >= o->ctx->nb_input_files || file_idx < 0)
             goto end;
 
         arg = endptr;
@@ -586,7 +551,7 @@ static int opt_map(void *optctx, const char *opt, const char *arg)
         char *endptr;
 
         file_idx = strtol(arg, &endptr, 0);
-        if (file_idx >= nb_input_files || file_idx < 0) {
+        if (file_idx >= o->ctx->nb_input_files || file_idx < 0) {
             av_log(NULL, AV_LOG_FATAL, "Invalid input file index: %d.\n", file_idx);
             ret = AVERROR(EINVAL);
             goto fail;
@@ -623,21 +588,21 @@ static int opt_map(void *optctx, const char *opt, const char *arg)
                 if (file_idx == m->file_index &&
                     !m->linklabel &&
                     m->stream_index >= 0 &&
-                    m->stream_index < input_files[m->file_index]->nb_streams &&
+                    m->stream_index < o->ctx->input_files[m->file_index]->nb_streams &&
                     stream_specifier_match(&ss,
-                                           input_files[m->file_index]->ctx,
-                                           input_files[m->file_index]->ctx->streams[m->stream_index],
+                                           o->ctx->input_files[m->file_index]->ctx,
+                                           o->ctx->input_files[m->file_index]->ctx->streams[m->stream_index],
                                            NULL))
                     m->disabled = 1;
             }
         else
-            for (i = 0; i < input_files[file_idx]->nb_streams; i++) {
+            for (i = 0; i < o->ctx->input_files[file_idx]->nb_streams; i++) {
                 if (!stream_specifier_match(&ss,
-                                            input_files[file_idx]->ctx,
-                                            input_files[file_idx]->ctx->streams[i],
+                                            o->ctx->input_files[file_idx]->ctx,
+                                            o->ctx->input_files[file_idx]->ctx->streams[i],
                                             NULL))
                     continue;
-                if (input_files[file_idx]->streams[i]->user_set_discard == AVDISCARD_ALL) {
+                if (o->ctx->input_files[file_idx]->streams[i]->user_set_discard == AVDISCARD_ALL) {
                     disabled = 1;
                     continue;
                 }
@@ -692,20 +657,21 @@ static int opt_attach(void *optctx, const char *opt, const char *arg)
 
 static int opt_sdp_file(void *optctx, const char *opt, const char *arg)
 {
-    GlobalOptionsContext *go = optctx;
-    return sch_sdp_filename(go->sch, arg);
+    FFmpegContext *ctx = optctx;
+    return sch_sdp_filename(ctx->sch, arg);
 }
 
 #if CONFIG_VAAPI
 static int opt_vaapi_device(void *optctx, const char *opt, const char *arg)
 {
+    FFmpegContext *ctx = optctx;
     const char *prefix = "vaapi:";
     char *tmp;
     int err;
     tmp = av_asprintf("%s%s", prefix, arg);
     if (!tmp)
         return AVERROR(ENOMEM);
-    err = hw_device_init_from_string(tmp, NULL);
+    err = hw_device_init_from_string(ctx, tmp, NULL);
     av_free(tmp);
     return err;
 }
@@ -714,6 +680,7 @@ static int opt_vaapi_device(void *optctx, const char *opt, const char *arg)
 #if CONFIG_QSV
 static int opt_qsv_device(void *optctx, const char *opt, const char *arg)
 {
+    FFmpegContext *ctx = optctx;
     const char *prefix = "qsv=__qsv_device:hw_any,child_device=";
     int err;
     char *tmp = av_asprintf("%s%s", prefix, arg);
@@ -721,7 +688,7 @@ static int opt_qsv_device(void *optctx, const char *opt, const char *arg)
     if (!tmp)
         return AVERROR(ENOMEM);
 
-    err = hw_device_init_from_string(tmp, NULL);
+    err = hw_device_init_from_string(ctx, tmp, NULL);
     av_free(tmp);
 
     return err;
@@ -730,6 +697,7 @@ static int opt_qsv_device(void *optctx, const char *opt, const char *arg)
 
 static int opt_init_hw_device(void *optctx, const char *opt, const char *arg)
 {
+    FFmpegContext *ctx = optctx;
     if (!strcmp(arg, "list")) {
         enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
         printf("Supported hardware device types:\n");
@@ -739,18 +707,19 @@ static int opt_init_hw_device(void *optctx, const char *opt, const char *arg)
         printf("\n");
         return AVERROR_EXIT;
     } else {
-        return hw_device_init_from_string(arg, NULL);
+        return hw_device_init_from_string(ctx, arg, NULL);
     }
 }
 
 static int opt_filter_hw_device(void *optctx, const char *opt, const char *arg)
 {
-    if (filter_hw_device) {
+    FFmpegContext *ctx = optctx;
+    if (ctx->filter_hw_device) {
         av_log(NULL, AV_LOG_ERROR, "Only one filter device can be used.\n");
         return AVERROR(EINVAL);
     }
-    filter_hw_device = hw_device_get_by_name(arg);
-    if (!filter_hw_device) {
+    ctx->filter_hw_device = hw_device_get_by_name(ctx, arg);
+    if (!ctx->filter_hw_device) {
         av_log(NULL, AV_LOG_ERROR, "Invalid filter device %s.\n", arg);
         return AVERROR(EINVAL);
     }
@@ -770,7 +739,7 @@ static int opt_recording_timestamp(void *optctx, const char *opt, const char *ar
     return 0;
 }
 
-int find_codec(void *logctx, const char *name,
+int find_codec(FFmpegContext *ctx, void *logctx, const char *name,
                enum AVMediaType type, int encoder, const AVCodec **pcodec)
 {
     const AVCodecDescriptor *desc;
@@ -794,7 +763,7 @@ int find_codec(void *logctx, const char *name,
         return encoder ? AVERROR_ENCODER_NOT_FOUND :
                          AVERROR_DECODER_NOT_FOUND;
     }
-    if (codec->type != type && !recast_media) {
+    if (codec->type != type && !ctx->recast_media) {
         av_log(logctx, AV_LOG_FATAL, "Invalid %s type '%s'\n", codec_string, name);
         return AVERROR(EINVAL);
     }
@@ -803,18 +772,18 @@ int find_codec(void *logctx, const char *name,
     return 0;;
 }
 
-int assert_file_overwrite(const char *filename)
+int assert_file_overwrite(FFmpegContext *ctx, const char *filename)
 {
     const char *proto_name = avio_find_protocol_name(filename);
 
-    if (file_overwrite && no_file_overwrite) {
+    if (ctx->file_overwrite && ctx->no_file_overwrite) {
         fprintf(stderr, "Error, both -y and -n supplied. Exiting.\n");
         return AVERROR(EINVAL);
     }
 
-    if (!file_overwrite) {
+    if (!ctx->file_overwrite) {
         if (proto_name && !strcmp(proto_name, "file") && avio_check(filename, 0) == 0) {
-            if (stdin_interaction && !no_file_overwrite) {
+            if (ctx->stdin_interaction && !ctx->no_file_overwrite) {
                 fprintf(stderr,"File '%s' already exists. Overwrite? [y/N] ", filename);
                 fflush(stderr);
                 term_exit();
@@ -823,7 +792,7 @@ int assert_file_overwrite(const char *filename)
                     av_log(NULL, AV_LOG_FATAL, "Not overwriting - exiting\n");
                     return AVERROR_EXIT;
                 }
-                term_init();
+                term_init(ctx);
             }
             else {
                 av_log(NULL, AV_LOG_FATAL, "File '%s' already exists. Exiting.\n", filename);
@@ -833,8 +802,8 @@ int assert_file_overwrite(const char *filename)
     }
 
     if (proto_name && !strcmp(proto_name, "file")) {
-        for (int i = 0; i < nb_input_files; i++) {
-             InputFile *file = input_files[i];
+        for (int i = 0; i < ctx->nb_input_files; i++) {
+             InputFile *file = ctx->input_files[i];
              if (file->ctx->iformat->flags & AVFMT_NOFILE)
                  continue;
              if (!strcmp(filename, file->ctx->url)) {
@@ -885,11 +854,11 @@ static int opt_target(void *optctx, const char *opt, const char *arg)
         arg += 5;
     } else {
         /* Try to determine PAL/NTSC by peeking in the input files */
-        if (nb_input_files) {
+        if (o->ctx->nb_input_files) {
             int i, j;
-            for (j = 0; j < nb_input_files; j++) {
-                for (i = 0; i < input_files[j]->nb_streams; i++) {
-                    AVStream *st = input_files[j]->ctx->streams[i];
+            for (j = 0; j < o->ctx->nb_input_files; j++) {
+                for (i = 0; i < o->ctx->input_files[j]->nb_streams; i++) {
+                    AVStream *st = o->ctx->input_files[j]->ctx->streams[i];
                     int64_t fr;
                     if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO)
                         continue;
@@ -1013,8 +982,9 @@ static int opt_target(void *optctx, const char *opt, const char *arg)
 
 static int opt_vstats_file(void *optctx, const char *opt, const char *arg)
 {
-    av_free (vstats_filename);
-    vstats_filename = av_strdup (arg);
+    FFmpegContext *ctx = optctx;
+    av_free(ctx->vstats_filename);
+    ctx->vstats_filename = av_strdup(arg);
     return 0;
 }
 
@@ -1215,7 +1185,7 @@ static int opt_audio_qscale(void *optctx, const char *opt, const char *arg)
 
 static int opt_filter_complex(void *optctx, const char *opt, const char *arg)
 {
-    GlobalOptionsContext *go = optctx;
+    FFmpegContext *ctx = optctx;
     char *graph_desc;
     int ret;
 
@@ -1223,12 +1193,12 @@ static int opt_filter_complex(void *optctx, const char *opt, const char *arg)
     if (!graph_desc)
         return AVERROR(ENOMEM);
 
-    ret = GROW_ARRAY(go->filtergraphs, go->nb_filtergraphs);
+    ret = GROW_ARRAY(ctx->filtergraph_specs, ctx->nb_filtergraph_specs);
     if (ret < 0) {
         av_freep(&graph_desc);
         return ret;
     }
-    go->filtergraphs[go->nb_filtergraphs - 1] = graph_desc;
+    ctx->filtergraph_specs[ctx->nb_filtergraph_specs - 1] = graph_desc;
 
     return 0;
 }
@@ -1373,6 +1343,7 @@ static int open_files(OptionGroupList *l, const char *inout, Scheduler *sch,
                       int (*open_file)(const OptionsContext*, const char*,
                                        Scheduler*))
 {
+    FFmpegContext *ctx = ffmpeg_sched_get_ctx(sch);
     int i, ret;
 
     for (i = 0; i < l->nb_groups; i++) {
@@ -1380,7 +1351,8 @@ static int open_files(OptionGroupList *l, const char *inout, Scheduler *sch,
         OptionsContext o;
 
         init_options(&o);
-        o.g = g;
+        o.g   = g;
+        o.ctx = ctx;
 
         ret = parse_optgroup(&o, g, options);
         if (ret < 0) {
@@ -1406,7 +1378,7 @@ static int open_files(OptionGroupList *l, const char *inout, Scheduler *sch,
 
 int ffmpeg_parse_options(int argc, char **argv, Scheduler *sch)
 {
-    GlobalOptionsContext go = { .sch = sch };
+    FFmpegContext *ctx = ffmpeg_sched_get_ctx(sch);
     OptionParseContext octx;
     const char *errmsg = NULL;
     int ret;
@@ -1421,20 +1393,20 @@ int ffmpeg_parse_options(int argc, char **argv, Scheduler *sch)
         goto fail;
     }
 
-    /* apply global options */
-    ret = parse_optgroup(&go, &octx.global_opts, options);
+    /* apply global options; the FFmpegContext itself is the optctx for these */
+    ret = parse_optgroup(ctx, &octx.global_opts, options);
     if (ret < 0) {
         errmsg = "parsing global options";
         goto fail;
     }
 
     /* configure terminal and setup signal handlers */
-    term_init();
+    term_init(ctx);
 
     /* create complex filtergraphs */
-    for (int i = 0; i < go.nb_filtergraphs; i++) {
-        ret = fg_create(NULL, &go.filtergraphs[i], sch, NULL);
-        go.filtergraphs[i] = NULL;
+    for (int i = 0; i < ctx->nb_filtergraph_specs; i++) {
+        ret = fg_create(NULL, &ctx->filtergraph_specs[i], sch, NULL);
+        ctx->filtergraph_specs[i] = NULL;
         if (ret < 0)
             goto fail;
     }
@@ -1461,22 +1433,23 @@ int ffmpeg_parse_options(int argc, char **argv, Scheduler *sch)
     }
 
     // bind unbound filtegraph inputs/outputs and check consistency
-    ret = fg_finalise_bindings();
+    ret = fg_finalise_bindings(ctx);
     if (ret < 0) {
         errmsg = "binding filtergraph inputs/outputs";
         goto fail;
     }
 
-    correct_input_start_times();
+    correct_input_start_times(ctx);
 
-    ret = apply_sync_offsets();
+    ret = apply_sync_offsets(ctx);
     if (ret < 0)
         goto fail;
 
 fail:
-    for (int i = 0; i < go.nb_filtergraphs; i++)
-        av_freep(&go.filtergraphs[i]);
-    av_freep(&go.filtergraphs);
+    for (int i = 0; i < ctx->nb_filtergraph_specs; i++)
+        av_freep(&ctx->filtergraph_specs[i]);
+    av_freep(&ctx->filtergraph_specs);
+    ctx->nb_filtergraph_specs = 0;
 
     uninit_parse_context(&octx);
     if (ret < 0 && ret != AVERROR_EXIT) {
@@ -1488,18 +1461,19 @@ fail:
 
 static int opt_progress(void *optctx, const char *opt, const char *arg)
 {
+    FFmpegContext *ctx = optctx;
     AVIOContext *avio = NULL;
     int ret;
 
     if (!strcmp(arg, "-"))
         arg = "pipe:";
-    ret = avio_open2(&avio, arg, AVIO_FLAG_WRITE, &int_cb, NULL);
+    ret = avio_open2(&avio, arg, AVIO_FLAG_WRITE, &ctx->int_cb, NULL);
     if (ret < 0) {
         av_log(NULL, AV_LOG_ERROR, "Failed to open progress URL \"%s\": %s\n",
                arg, av_err2str(ret));
         return ret;
     }
-    progress_avio = avio;
+    ctx->progress_avio = avio;
     return 0;
 }
 
@@ -1532,26 +1506,29 @@ static const char *const alt_qscale[]         = { "q", NULL};
 static const char *const alt_tag[]            = { "atag", "vtag", "stag", NULL };
 
 #define OFFSET(x) offsetof(OptionsContext, x)
+/* Global (non-per-file) options bind into the job context instead of a
+ * file-scope global, so that each FFmpegContext owns its own copy. */
+#define OFFSET_CTX(x) offsetof(FFmpegContext, x)
 const OptionDef options[] = {
     /* main options */
     CMDUTILS_COMMON_OPTIONS
     { "f",                      OPT_TYPE_STRING, OPT_OFFSET | OPT_INPUT | OPT_OUTPUT,
         { .off       = OFFSET(format) },
         "force container format (auto-detected otherwise)", "fmt" },
-    { "y",                      OPT_TYPE_BOOL, 0,
-        {              &file_overwrite },
+    { "y",                      OPT_TYPE_BOOL, OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(file_overwrite) },
         "overwrite output files" },
-    { "n",                      OPT_TYPE_BOOL, 0,
-        {              &no_file_overwrite },
+    { "n",                      OPT_TYPE_BOOL, OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(no_file_overwrite) },
         "never overwrite output files" },
-    { "ignore_unknown",         OPT_TYPE_BOOL, OPT_EXPERT,
-        {              &ignore_unknown_streams },
+    { "ignore_unknown",         OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(ignore_unknown_streams) },
         "Ignore unknown stream types" },
-    { "copy_unknown",           OPT_TYPE_BOOL, OPT_EXPERT,
-        {              &copy_unknown_streams },
+    { "copy_unknown",           OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(copy_unknown_streams) },
         "Copy unknown stream types" },
-    { "recast_media",           OPT_TYPE_BOOL, OPT_EXPERT,
-        {              &recast_media },
+    { "recast_media",           OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(recast_media) },
         "allow recasting stream type in order to force a decoder of different media type" },
     { "c",                      OPT_TYPE_STRING, OPT_PERSTREAM | OPT_INPUT | OPT_OUTPUT | OPT_DECODER | OPT_HAS_CANON,
         { .off       = OFFSET(codec_names) },
@@ -1624,26 +1601,26 @@ const OptionDef options[] = {
         { .func_arg = opt_data_frames },
         "set the number of data frames to output", "number",
         .u1.name_canon = "frames" },
-    { "benchmark",              OPT_TYPE_BOOL, OPT_EXPERT,
-        { &do_benchmark },
+    { "benchmark",              OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(do_benchmark) },
         "add timings for benchmarking" },
-    { "benchmark_all",          OPT_TYPE_BOOL, OPT_EXPERT,
-        { &do_benchmark_all },
+    { "benchmark_all",          OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(do_benchmark_all) },
       "add timings for each task" },
     { "progress",               OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_progress },
       "write program-readable progress information", "url" },
-    { "stdin",                  OPT_TYPE_BOOL, OPT_EXPERT,
-        { &stdin_interaction },
+    { "stdin",                  OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(stdin_interaction) },
       "enable or disable interaction on standard input" },
     { "timelimit",              OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_timelimit },
         "set max runtime in seconds in CPU user time", "limit" },
-    { "dump",                   OPT_TYPE_BOOL, OPT_EXPERT,
-        { &do_pkt_dump },
+    { "dump",                   OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(do_pkt_dump) },
         "dump each input packet" },
-    { "hex",                    OPT_TYPE_BOOL, OPT_EXPERT,
-        { &do_hex_dump },
+    { "hex",                    OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(do_hex_dump) },
         "when dumping packets, also dump the payload" },
     { "re",                     OPT_TYPE_BOOL, OPT_EXPERT | OPT_OFFSET | OPT_INPUT,
         { .off = OFFSET(rate_emu) },
@@ -1661,17 +1638,17 @@ const OptionDef options[] = {
         { .func_arg = opt_target },
         "specify target file type (\"vcd\", \"svcd\", \"dvd\", \"dv\" or \"dv50\" "
         "with optional prefixes \"pal-\", \"ntsc-\" or \"film-\")", "type" },
-    { "frame_drop_threshold",   OPT_TYPE_FLOAT, OPT_EXPERT,
-        { &frame_drop_threshold },
+    { "frame_drop_threshold",   OPT_TYPE_FLOAT, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(frame_drop_threshold) },
         "frame drop threshold", "" },
-    { "copyts",                 OPT_TYPE_BOOL, OPT_EXPERT,
-        { &copy_ts },
+    { "copyts",                 OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(copy_ts) },
         "copy timestamps" },
-    { "start_at_zero",          OPT_TYPE_BOOL, OPT_EXPERT,
-        { &start_at_zero },
+    { "start_at_zero",          OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(start_at_zero) },
         "shift input timestamps to start at 0 when using copyts" },
-    { "copytb",                 OPT_TYPE_INT, OPT_EXPERT,
-        { &copy_tb },
+    { "copytb",                 OPT_TYPE_INT, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(copy_tb) },
         "copy input stream time base when stream copying", "mode" },
     { "shortest",               OPT_TYPE_BOOL, OPT_EXPERT | OPT_OFFSET | OPT_OUTPUT,
         { .off = OFFSET(shortest) },
@@ -1682,14 +1659,14 @@ const OptionDef options[] = {
     { "bitexact",               OPT_TYPE_BOOL, OPT_EXPERT | OPT_OFFSET | OPT_OUTPUT | OPT_INPUT,
         { .off = OFFSET(bitexact) },
         "bitexact mode" },
-    { "dts_delta_threshold",    OPT_TYPE_FLOAT, OPT_EXPERT,
-        { &dts_delta_threshold },
+    { "dts_delta_threshold",    OPT_TYPE_FLOAT, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(dts_delta_threshold) },
         "timestamp discontinuity delta threshold", "threshold" },
-    { "dts_error_threshold",    OPT_TYPE_FLOAT, OPT_EXPERT,
-        { &dts_error_threshold },
+    { "dts_error_threshold",    OPT_TYPE_FLOAT, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(dts_error_threshold) },
         "timestamp error delta threshold", "threshold" },
-    { "xerror",                 OPT_TYPE_BOOL, OPT_EXPERT,
-        { &exit_on_error },
+    { "xerror",                 OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(exit_on_error) },
         "exit on error", "error" },
     { "abort_on",               OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_abort_on },
@@ -1726,8 +1703,8 @@ const OptionDef options[] = {
     { "filter_threads",         OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_filter_threads },
         "number of non-complex filter threads" },
-    { "filter_buffered_frames", OPT_TYPE_INT, OPT_EXPERT,
-        { &filter_buffered_frames },
+    { "filter_buffered_frames", OPT_TYPE_INT, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(filter_buffered_frames) },
         "maximum number of buffered frames in a filter graph" },
     { "reinit_filter",          OPT_TYPE_INT, OPT_PERSTREAM | OPT_INPUT | OPT_EXPERT,
         { .off = OFFSET(reinit_filters) },
@@ -1738,26 +1715,26 @@ const OptionDef options[] = {
     { "filter_complex",         OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_filter_complex },
         "create a complex filtergraph", "graph_description" },
-    { "filter_complex_threads", OPT_TYPE_INT, OPT_EXPERT,
-        { &filter_complex_nbthreads },
+    { "filter_complex_threads", OPT_TYPE_INT, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(filter_complex_nbthreads) },
         "number of threads for -filter_complex" },
     { "lavfi",               OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_filter_complex },
         "create a complex filtergraph", "graph_description" },
-    { "print_graphs",   OPT_TYPE_BOOL, 0,
-        { &print_graphs },
+    { "print_graphs",   OPT_TYPE_BOOL, OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(print_graphs) },
         "print execution graph data to stderr" },
-    { "print_graphs_file", OPT_TYPE_STRING, 0,
-        { &print_graphs_file },
+    { "print_graphs_file", OPT_TYPE_STRING, OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(print_graphs_file) },
         "write execution graph data to the specified file", "filename" },
-    { "print_graphs_format", OPT_TYPE_STRING, 0,
-        { &print_graphs_format },
+    { "print_graphs_format", OPT_TYPE_STRING, OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(print_graphs_format) },
       "set the output printing format (available formats are: default, compact, csv, flat, ini, json, xml, mermaid, mermaidhtml)", "format" },
-    { "auto_conversion_filters", OPT_TYPE_BOOL, OPT_EXPERT,
-        { &auto_conversion_filters },
+    { "auto_conversion_filters", OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(auto_conversion_filters) },
         "enable automatic conversion filters globally" },
-    { "stats",               OPT_TYPE_BOOL, 0,
-        { &print_stats },
+    { "stats",               OPT_TYPE_BOOL, OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(print_stats) },
         "print progress report during encoding", },
     { "stats_period",        OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_stats_period },
@@ -1770,11 +1747,11 @@ const OptionDef options[] = {
         "extract an attachment into a file", "filename" },
     { "stream_loop",         OPT_TYPE_INT, OPT_EXPERT | OPT_INPUT | OPT_OFFSET,
         { .off = OFFSET(loop) }, "set number of times input stream shall be looped", "loop count" },
-    { "debug_ts",            OPT_TYPE_BOOL, OPT_EXPERT,
-        { &debug_ts },
+    { "debug_ts",            OPT_TYPE_BOOL, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(debug_ts) },
         "print timestamp debugging info" },
-    { "max_error_rate",      OPT_TYPE_FLOAT, OPT_EXPERT,
-        { &max_error_rate },
+    { "max_error_rate",      OPT_TYPE_FLOAT, OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(max_error_rate) },
         "ratio of decoding errors (0.0: no errors, 1.0: 100% errors) above which ffmpeg returns an error instead of success.", "maximum error rate" },
     { "discard",             OPT_TYPE_STRING, OPT_PERSTREAM | OPT_INPUT | OPT_EXPERT,
         { .off = OFFSET(discard) },
@@ -1874,8 +1851,8 @@ const OptionDef options[] = {
     { "vstats_file",                OPT_TYPE_FUNC,   OPT_VIDEO | OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_vstats_file },
         "dump video coding statistics to file", "file" },
-    { "vstats_version",             OPT_TYPE_INT,    OPT_VIDEO | OPT_EXPERT,
-        { &vstats_version },
+    { "vstats_version",             OPT_TYPE_INT,    OPT_VIDEO | OPT_EXPERT | OPT_FLAG_OFFSET,
+        { .off = OFFSET_CTX(vstats_version) },
         "Version of the vstats format to use."},
     { "vf",                         OPT_TYPE_FUNC,   OPT_VIDEO | OPT_FUNC_ARG | OPT_PERFILE | OPT_OUTPUT | OPT_HAS_CANON,
         { .func_arg = opt_video_filters },

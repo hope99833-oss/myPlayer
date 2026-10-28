@@ -132,6 +132,11 @@ typedef struct StreamMap {
 typedef struct OptionsContext {
     OptionGroup *g;
 
+    /* Owning job context. Set before the group is parsed; used by per-file
+     * option handlers that need program-wide state (e.g. the input files
+     * opened so far). */
+    struct FFmpegContext *ctx;
+
     /* input/output options */
     int64_t start_time;
     int64_t start_time_eof;
@@ -712,67 +717,109 @@ typedef struct FrameData {
     int                 nb_side_data;
 } FrameData;
 
-extern InputFile   **input_files;
-extern int        nb_input_files;
+typedef struct BenchmarkTimeStamps {
+    int64_t real_usec;
+    int64_t user_usec;
+    int64_t sys_usec;
+} BenchmarkTimeStamps;
 
-extern OutputFile   **output_files;
-extern int         nb_output_files;
+/**
+ * Per-job state for one ffmpeg transcode/processing run.
+ *
+ * Everything that used to live in file-scope globals is collected here, so
+ * that multiple FFmpegContext instances can run concurrently, each on its own
+ * thread. The context belonging to a Scheduler is retrieved with
+ * ffmpeg_sched_get_ctx().
+ */
+typedef struct FFmpegContext {
+    Scheduler       *sch;
 
-// complex filtergraphs
-extern FilterGraph **filtergraphs;
-extern int        nb_filtergraphs;
+    /* files and filtergraphs */
+    InputFile      **input_files;
+    int              nb_input_files;
+    OutputFile     **output_files;
+    int              nb_output_files;
+    FilterGraph    **filtergraphs;
+    int              nb_filtergraphs;
+    Decoder        **decoders;
+    int              nb_decoders;
 
-// standalone decoders (not tied to demuxed streams)
-extern Decoder     **decoders;
-extern int        nb_decoders;
+    /* Staging area for -filter_complex/-lavfi specs, consumed (and freed) by
+     * ffmpeg_parse_options() once the job context is fully set up. */
+    char           **filtergraph_specs;
+    int              nb_filtergraph_specs;
 
-extern char *vstats_filename;
+    /* global options */
+    int              file_overwrite;
+    int              no_file_overwrite;
+    int              ignore_unknown_streams;
+    int              copy_unknown_streams;
+    int              recast_media;
+    char            *vstats_filename;
+    FILE            *vstats_file;
+    float            dts_delta_threshold;
+    float            dts_error_threshold;
+    enum VideoSyncMethod video_sync_method;
+    float            frame_drop_threshold;
+    int              do_benchmark;
+    int              do_benchmark_all;
+    int              do_hex_dump;
+    int              do_pkt_dump;
+    int              copy_ts;
+    int              start_at_zero;
+    int              copy_tb;
+    int              debug_ts;
+    int              exit_on_error;
+    int              abort_on_flags;
+    int              print_stats;
+    int64_t          stats_period;
+    int              stdin_interaction;
+    /* Nonzero when this job runs as the standalone ffmpeg CLI (ffmpeg_main).
+     * Zero for ffmpeg_task_run() jobs: such jobs never install process-wide
+     * signal/console handlers and never grab the terminal or stdin, so any
+     * number of them may run concurrently and are cancelled only through
+     * ffmpeg_task_cancel()/transcode_abort. */
+    int              cli_mode;
+    AVIOContext     *progress_avio;
+    float            max_error_rate;
+    char            *filter_nbthreads;
+    int              filter_complex_nbthreads;
+    int              filter_buffered_frames;
+    int              vstats_version;
+    int              print_graphs;
+    char            *print_graphs_file;
+    char            *print_graphs_format;
+    int              auto_conversion_filters;
+    HWDevice        *filter_hw_device;
 
-extern float dts_delta_threshold;
-extern float dts_error_threshold;
+    /* hardware devices created by this job */
+    HWDevice       **hw_devices;
+    int              nb_hw_devices;
 
-extern enum VideoSyncMethod video_sync_method;
-extern float frame_drop_threshold;
-extern int do_benchmark;
-extern int do_benchmark_all;
-extern int do_hex_dump;
-extern int do_pkt_dump;
-extern int copy_ts;
-extern int start_at_zero;
-extern int copy_tb;
-extern int debug_ts;
-extern int exit_on_error;
-extern int abort_on_flags;
-extern int print_stats;
-extern int64_t stats_period;
-extern int stdin_interaction;
-extern AVIOContext *progress_avio;
-extern float max_error_rate;
+    /* runtime state */
+    atomic_uint      nb_output_dumped;
+    atomic_int       transcode_init_done;
+    volatile int     received_sigterm;
+    volatile int     received_nb_signals;
+    volatile int     ffmpeg_exited;
+    /* set by the host/API to request a graceful abort */
+    int              transcode_abort;
+    int64_t          copy_ts_first_pts;
+    AVIOInterruptCB  int_cb;
 
-extern char *filter_nbthreads;
-extern int filter_complex_nbthreads;
-extern int filter_buffered_frames;
-extern int vstats_version;
-extern int print_graphs;
-extern char *print_graphs_file;
-extern char *print_graphs_format;
-extern int auto_conversion_filters;
+    /* progress reporting state (previously function-local statics) */
+    int64_t          report_last_time;
+    int              report_first;
+    int64_t          kbd_last_time;
+    BenchmarkTimeStamps current_time;
+} FFmpegContext;
 
-extern const AVIOInterruptCB int_cb;
+FFmpegContext *ffmpeg_context_alloc(void);
+void           ffmpeg_context_free(FFmpegContext **pctx);
 
 extern const OptionDef options[];
-extern HWDevice *filter_hw_device;
 
-extern atomic_uint nb_output_dumped;
-
-extern int ignore_unknown_streams;
-extern int copy_unknown_streams;
-
-extern int recast_media;
-
-extern FILE *vstats_file;
-
-void term_init(void);
+void term_init(FFmpegContext *ctx);
 void term_exit(void);
 
 void show_usage(void);
@@ -780,8 +827,8 @@ void show_usage(void);
 int check_avoptions_used(const AVDictionary *opts, const AVDictionary *opts_used,
                          void *logctx, int decode);
 
-int assert_file_overwrite(const char *filename);
-int find_codec(void *logctx, const char *name,
+int assert_file_overwrite(FFmpegContext *ctx, const char *filename);
+int find_codec(FFmpegContext *ctx, void *logctx, const char *name,
                enum AVMediaType type, int encoder, const AVCodec **codec);
 int parse_and_set_vsync(const char *arg, enum VideoSyncMethod *vsync_var, int file_idx, int st_idx);
 
@@ -791,7 +838,7 @@ int fg_create_simple(FilterGraph **pfg,
                      char **graph_desc,
                      Scheduler *sch, unsigned sched_idx_enc,
                      const OutputFilterOptions *opts);
-int fg_finalise_bindings(void);
+int fg_finalise_bindings(FFmpegContext *ctx);
 
 /**
  * Get our axiliary frame data attached to the frame, allocating it
@@ -828,20 +875,20 @@ void enc_stats_write(OutputStream *ost, EncStats *es,
                      const AVFrame *frame, const AVPacket *pkt,
                      uint64_t frame_num);
 
-HWDevice *hw_device_get_by_name(const char *name);
-HWDevice *hw_device_get_by_type(enum AVHWDeviceType type);
-int hw_device_init_from_string(const char *arg, HWDevice **dev);
-int hw_device_init_from_type(enum AVHWDeviceType type,
+HWDevice *hw_device_get_by_name(FFmpegContext *ctx, const char *name);
+HWDevice *hw_device_get_by_type(FFmpegContext *ctx, enum AVHWDeviceType type);
+int hw_device_init_from_string(FFmpegContext *ctx, const char *arg, HWDevice **dev);
+int hw_device_init_from_type(FFmpegContext *ctx, enum AVHWDeviceType type,
                              const char *device,
                              HWDevice **dev_out);
-void hw_device_free_all(void);
+void hw_device_free_all(FFmpegContext *ctx);
 
 /**
  * Get a hardware device to be used with this filtergraph.
  * The returned reference is owned by the callee, the caller
  * must ref it explicitly for long-term use.
  */
-AVBufferRef *hw_device_for_filter(void);
+AVBufferRef *hw_device_for_filter(FFmpegContext *ctx);
 
 /**
  * Create a standalone decoder.
@@ -919,17 +966,17 @@ int ist_filter_add(InputStream *ist, InputFilter *ifilter, int is_simple,
 /**
  * Find an unused input stream of given type.
  */
-InputStream *ist_find_unused(enum AVMediaType type);
+InputStream *ist_find_unused(FFmpegContext *ctx, enum AVMediaType type);
 
 /* iterate over all input streams in all input files;
  * pass NULL to start iteration */
-InputStream *ist_iter(InputStream *prev);
+InputStream *ist_iter(FFmpegContext *ctx, InputStream *prev);
 
 /* iterate over all output streams in all output files;
  * pass NULL to start iteration */
-OutputStream *ost_iter(OutputStream *prev);
+OutputStream *ost_iter(FFmpegContext *ctx, OutputStream *prev);
 
-void update_benchmark(const char *fmt, ...);
+void update_benchmark(FFmpegContext *ctx, const char *fmt, ...);
 
 const char *opt_match_per_type_str(const SpecifierOptList *sol,
                                    char mediatype);

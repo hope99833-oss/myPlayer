@@ -307,6 +307,7 @@ static void push_operation(OperationQueue *q, int op, double dval)
     if (!q || !q->mutex)
         return;
     SDL_LockMutex(q->mutex);
+
     next = (q->tail + 1) % OP_QUEUE_SIZE;
     if (next != q->head) {
         q->items[q->tail].op = op;
@@ -1501,6 +1502,8 @@ static void set_default_window_size(VideoState *is, int width, int height, AVRat
     is->cfg_height = rect.h;
 }
 
+static void seek_log(const char *fmt, ...);
+
 static int video_open(VideoState *is)
 {
     int w,h;
@@ -1510,11 +1513,24 @@ static int video_open(VideoState *is)
 
     SDL_SetWindowTitle(is->window, is->filename.c_str());
 
-    SDL_SetWindowSize(is->window, w, h);
-    SDL_SetWindowPosition(is->window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-    if (is->is_full_screen)
-        SDL_SetWindowFullscreen(is->window, SDL_WINDOW_FULLSCREEN_DESKTOP);
-    SDL_ShowWindow(is->window);
+    if (is->parent_hwnd) {
+        // Foreign (owned) host window: the owner places and sizes it via
+        // SetWindowPos. Resizing/centering it here would yank it away from the
+        // video area and fight the owner's sync logic, so leave its geometry
+        // alone and adopt whatever size the owner gave it.
+        SDL_GetWindowSize(is->window, &w, &h);
+        if (w <= 0 || h <= 0) {
+            w = is->cfg_width  ? is->cfg_width  : 640;
+            h = is->cfg_height ? is->cfg_height : 480;
+        }
+        SDL_ShowWindow(is->window);
+    } else {
+        SDL_SetWindowSize(is->window, w, h);
+        SDL_SetWindowPosition(is->window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        if (is->is_full_screen)
+            SDL_SetWindowFullscreen(is->window, SDL_WINDOW_FULLSCREEN_DESKTOP);
+        SDL_ShowWindow(is->window);
+    }
 
     is->width  = w;
     is->height = h;
@@ -1651,7 +1667,9 @@ static void check_external_clock_speed(VideoState *is) {
    }
 }
 
-/* Seek pipeline trace: visible in the VS debug output window and on stderr. */
+/* Seek pipeline trace: written to seek_debug.log next to the working dir so it
+ * is captured even when the GUI app has no console, plus OutputDebugString for
+ * the VS Output window. */
 static void seek_log(const char *fmt, ...)
 {
     char buf[512];
@@ -1661,6 +1679,18 @@ static void seek_log(const char *fmt, ...)
     va_end(ap);
 #ifdef _WIN32
     OutputDebugStringA(buf);
+    {
+        static FILE *fp = NULL;
+        if (!fp)
+            fp = fopen("seek_debug.log", "w");
+        if (fp) {
+            SYSTEMTIME st;
+            GetLocalTime(&st);
+            fprintf(fp, "%02d:%02d:%02d.%03d %s",
+                    st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, buf);
+            fflush(fp);
+        }
+    }
 #endif
     fprintf(stderr, "%s", buf);
     fflush(stderr);
@@ -1713,11 +1743,6 @@ static void toggle_pause(VideoState *is)
     stream_toggle_pause(is);
     is->step = 0;
     report_progress(is, is->paused ? FFPLAYER_STATE_PAUSED : FFPLAYER_STATE_PLAYING);
-}
-
-static void toggle_mute(VideoState *is)
-{
-    is->muted = !is->muted;
 }
 
 static void update_volume(VideoState *is, int sign, double step)
@@ -2005,8 +2030,6 @@ static int get_video_frame(VideoState *is, AVFrame *frame)
                 got_picture = 0;
             } else {
                 is->seek_accurate_video = 0;
-                seek_log("[seek] video accurate done pts=%.3f target=%.3f early_drops=%d\n",
-                         dpts, target_sec, is->frame_drops_early);
             }
         }
 
@@ -3577,7 +3600,9 @@ static void event_loop(VideoState *cur_stream)
                 cur_stream->audio_volume = av_clip(SDL_MIX_MAXVOLUME * (int)dval / 100, 0, SDL_MIX_MAXVOLUME);
                 break;
             case FFPLAYER_MUTE:
-                toggle_mute(cur_stream);
+                /* dval carries the explicit target state (0/1) so the UI can set
+                   and query mute reliably instead of blind-toggling. */
+                cur_stream->muted = (int)dval;
                 break;
             case FFPLAYER_FULL:
                 toggle_full_screen(cur_stream);
@@ -3644,13 +3669,14 @@ struct FFPlayer::Impl {
     SDL_Thread *play_thread;
     volatile int running;
     volatile int paused;
+    volatile int muted;
 
     FFPlayerCallback callback;
     void *cb_userdata;
 
     Impl() : parent_hwnd(nullptr), cfg_width(640), cfg_height(480),
              cur_stream(nullptr), play_thread(nullptr), running(0), paused(0),
-             callback(nullptr), cb_userdata(nullptr) {}
+             muted(0), callback(nullptr), cb_userdata(nullptr) {}
 };
 
 static int sdl_init_once()
@@ -3740,6 +3766,23 @@ static int player_run(FFPlayer::Impl *impl)
 #ifdef _WIN32
         if (impl->parent_hwnd) {
             w = SDL_CreateWindowFrom(impl->parent_hwnd);
+#ifdef _WIN32
+            /* The owner gives this host window its geometry (SetWindowPos) and
+               SDL follows it through WM_SIZE. SDL only listens for WM_SIZE when
+               the window looks resizable (WS_THICKFRAME), which the owner sets
+               for that reason alone. Drop the style's resize frame now that SDL
+               has made up its mind: the client area has to equal the window rect
+               so SDL's surface matches the owner's video area exactly instead of
+               being inset by the frame thickness. */
+            HWND host = (HWND)impl->parent_hwnd;
+            LONG_PTR style = GetWindowLongPtrW(host, GWL_STYLE);
+            if (style & WS_THICKFRAME) {
+                SetWindowLongPtrW(host, GWL_STYLE, style & ~WS_THICKFRAME);
+                SetWindowPos(host, NULL, 0, 0, 0, 0,
+                             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE |
+                             SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+#endif
         } else {
             w = SDL_CreateWindow(program_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                                  impl->cfg_width, impl->cfg_height, sdl_flags);
@@ -3863,6 +3906,7 @@ void FFPlayer::resume()
 
 void FFPlayer::seek(double seconds)
 {
+    seek_log("[seek] FFPlayer::seek(%.3f) cur_stream=%p\n", seconds, (void*)m->cur_stream);
     if (m->cur_stream)
         push_operation(&m->cur_stream->opq, FFPLAYER_SEEK, seconds);
 }
@@ -3873,10 +3917,21 @@ void FFPlayer::setVolume(int volume)
         push_operation(&m->cur_stream->opq, FFPLAYER_VOICE, volume);
 }
 
+void FFPlayer::setMute(bool muted)
+{
+    m->muted = muted ? 1 : 0;
+    if (m->cur_stream)
+        push_operation(&m->cur_stream->opq, FFPLAYER_MUTE, m->muted);
+}
+
 void FFPlayer::toggleMute()
 {
-    if (m->cur_stream)
-        push_operation(&m->cur_stream->opq, FFPLAYER_MUTE, 0);
+    setMute(!isMuted());
+}
+
+bool FFPlayer::isMuted() const
+{
+    return m->muted != 0;
 }
 
 void FFPlayer::toggleFullScreen()

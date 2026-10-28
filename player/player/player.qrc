@@ -1,11 +1,15 @@
 <RCC>
     <qresource prefix="icons">
-        <file>resources/play.png</file>
-        <file>resources/pause.png</file>
-        <file>resources/stop.png</file>
-        <file>resources/previous.png</file>
-        <file>resources/next.png</file>
-        <file>resources/volume.png</file>
-        <file>resources/fullscreen.png</file>
+        <file alias="play.png">resources/play.png</file>
+        <file alias="pause.png">resources/pause.png</file>
+        <file alias="stop.png">resources/stop.png</file>
+        <file alias="open.png">resources/open.png</file>
+        <file alias="volume.png">resources/volume.png</file>
+        <file alias="volume_mute.png">resources/volume_mute.png</file>
+        <file alias="fullscreen.png">resources/fullscreen.png</file>
+        <file alias="minimize.png">resources/minimize.png</file>
+        <file alias="maximize.png">resources/maximize.png</file>
+        <file alias="restore.png">resources/restore.png</file>
+        <file alias="close.png">resources/close.png</file>
     </qresource>
 </RCC>

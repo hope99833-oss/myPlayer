@@ -45,6 +45,7 @@
 #include "libavutil/eval.h"
 #include "libavutil/dict.h"
 #include "libavutil/opt.h"
+#include "libavutil/thread.h"
 #include "cmdutils.h"
 #include "fopen_utf8.h"
 #include "opt_common.h"
@@ -58,6 +59,20 @@ AVDictionary *swr_opts;
 AVDictionary *format_opts, *codec_opts;
 
 int hide_banner = 0;
+
+/* Guards the process-wide option dictionaries above, so that multiple ffmpeg
+ * tasks can be parsed from different threads without corrupting each other. */
+static AVMutex options_mutex = AV_MUTEX_INITIALIZER;
+
+void ffmpeg_options_lock(void)
+{
+    ff_mutex_lock(&options_mutex);
+}
+
+void ffmpeg_options_unlock(void)
+{
+    ff_mutex_unlock(&options_mutex);
+}
 
 void uninit_opts(void)
 {
@@ -221,9 +236,28 @@ static void prepare_app_arguments(int *argc_ptr, char ***argv_ptr)
     *argc_ptr = win32_argc;
     *argv_ptr = win32_argv_utf8;
 }
+
+/*
+ * In library/task mode the caller supplies its own argv; override the
+ * command-line re-parsing so prepare_app_arguments() passes those arguments
+ * through untouched instead of reading the host process command line.
+ * Pass argc==0 / argv==NULL to clear the override and restore CLI behaviour.
+ */
+void cmdutils_set_argv(int argc, char **argv)
+{
+    win32_argc      = argc;
+    win32_argv_utf8 = argv;
+}
 #else
 static inline void prepare_app_arguments(int *argc_ptr, char ***argv_ptr)
 {
+    /* nothing to do */
+}
+
+void cmdutils_set_argv(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
     /* nothing to do */
 }
 #endif /* HAVE_COMMANDLINETOARGVW */
